@@ -6,9 +6,10 @@ const AuthorizationError = require('../../exceptions/AuthorizationError');
 const { mapDBToModel, mapDBToModelSelected, mapDBToModelPlaylist } = require('../../utils');
 
 class PlaylistsService {
-  constructor(collaborationService) {
+  constructor(collaborationService, cacheService) {
     this._pool = new Pool();
     this._collaborationService = collaborationService;
+    this._cacheService = cacheService;
   }
 
   async addPlaylist({
@@ -89,20 +90,33 @@ class PlaylistsService {
       throw new InvariantError('Lagu gagal ditambahkan ke playlist');
     }
 
+    await this._cacheService.delete(`playlists:${playlistId}`);
     return result.rows[0].id;
   }
 
   async getSongFromPlaylist(playlistId) {
-    const query = {
-      text: `SELECT songs.id, songs.title, songs.performer
-      FROM songs
-      JOIN playlistsongs ON songs.id = playlistsongs.song_id
-      WHERE playlistsongs.playlist_id = $1`,
-      values: [playlistId],
-    };
+    try {
+      // jika ada ambil dari cache
+      const result = await this._cacheService.get(`playlists:${playlistId}`);
+      console.log(`from cache playlists:${playlistId}`, result);
+      return JSON.parse(result);
+    } catch (error) {
+      const query = {
+        text: `SELECT songs.id, songs.title, songs.performer
+        FROM songs
+        JOIN playlistsongs ON songs.id = playlistsongs.song_id
+        WHERE playlistsongs.playlist_id = $1`,
+        values: [playlistId],
+      };
 
-    const result = await this._pool.query(query);
-    return result.rows.map(mapDBToModel);
+      const result = await this._pool.query(query);
+      const mappedResult = result.rows.map(mapDBToModel);
+
+      // catatan akan disimpan pada cache
+      await this._cacheService.set(`playlists:${playlistId}`, JSON.stringify(mappedResult));
+
+      return mappedResult;
+    }
   }
 
   async deleteSongFromPlaylist(playlistId, songId) {
@@ -116,6 +130,8 @@ class PlaylistsService {
     if (!result.rows.length) {
       throw new InvariantError('Lagu gagal dihapus');
     }
+
+    await this._cacheService.delete(`playlists:${playlistId}`);
   }
 
   async getPlaylistById(id) {
